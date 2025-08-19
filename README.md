@@ -1,6 +1,6 @@
 # sign
 
-A small project to detect if signing is enabled for SMB and LDAP (not implemeted yet)
+A small project to detect if signing is enabled and required for SMB and LDAP (not implemeted yet)
 
 ### Usage:
 
