@@ -1,0 +1,157 @@
+package protocol
+
+import (
+	"encoding/binary"
+	"fmt"
+	"net"
+	"time"
+	"github.com/fatih/color"
+)
+
+
+func StartSMB(target_address string) {
+	address := fmt.Sprintf("%s:445", target_address)
+	
+	conn_smb2, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		return
+	}
+	defer conn_smb2.Close()
+
+	protocol, buffer := checkIfSMB2(conn_smb2)
+	if protocol == "SMB2" {
+
+		if len(buffer) > 68 {
+			securityMode := binary.LittleEndian.Uint16(buffer[68:70])
+			
+			if securityMode&0x02 != 0 {
+				fmt.Printf("[+] %s - Enabled and required\n", address)
+			} else if securityMode&0x01 != 0 {
+				fmt.Printf("[+] %s - Enabled, but not required\n", address)
+			} else {
+				fmt.Printf("[+] %s - Disabled\n", address)
+			}
+			return
+		}
+		return
+	}
+	
+	conn_smb2.Close()
+	
+	conn_smb1, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		return
+	}
+	defer conn_smb1.Close()
+	
+	protocol_smb1, buffer_smb1 := checkIfSMB1(conn_smb1)
+	if protocol_smb1 == "SMB1" {
+		if len(buffer_smb1) > 37 {
+			securityMode_smb1 := buffer_smb1[37]
+
+			if securityMode_smb1&0x08 != 0 {
+				fmt.Println("[+] SMB Signing: Enabled and required")
+			} else if securityMode_smb1&0x04 != 0 {
+				fmt.Println("[+] SMB Signing: Enabled, but not required")
+			} else {
+				fmt.Println("[+] SMB Signing: Disabled")
+			}
+			return
+		}
+	}
+	
+	color.New(color.FgRed).Printf("[x] No SMB protocol detected\n")
+}
+
+func checkIfSMB2(conn net.Conn) (string, []byte) {
+	smb2_header := []byte {
+		0x00, 0x00, 0x00, 0x00,
+		0xfe, 0x53, 0x4d, 0x42,
+		0x40, 0x00,
+		0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+
+	smb2_negotiateBody := []byte {
+		0x24, 0x00,
+		0x02, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x78, 0x00,
+		0x02, 0x00,
+		0x00, 0x00,
+		0x02, 0x02,
+		0x10, 0x02,
+	}
+
+	smb2_packet := append(smb2_header, smb2_negotiateBody...)
+	binary.BigEndian.PutUint32(smb2_packet[0:4], uint32(len(smb2_packet)-4))
+
+	_, err := conn.Write(smb2_packet)
+	if err != nil {
+		return "WriteError", nil
+	}
+
+	buffer := make([]byte, 1024)
+	bytesRead, err := conn.Read(buffer)
+	if err != nil {
+		return "ReadError", nil
+	}
+
+	if bytesRead >= 8 && string(buffer[4:8]) == "\xfeSMB" {
+		return "SMB2", buffer[:bytesRead]
+	}
+
+	return "NotSMB", nil
+}
+
+func checkIfSMB1(conn net.Conn) (string, []byte) {
+	smb1_packet := []byte {
+		0x00, 0x00, 0x00, 0x54,
+		0xff, 0x53, 0x4d, 0x42,
+		0x72,
+		0x00, 0x00, 0x00, 0x00,
+		0x18,
+		0x01, 0x20,
+		0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00,
+		0x31, 0x00,
+		0x02, 0x4e, 0x54, 0x20, 0x4c, 0x4d, 0x20, 0x30, 0x2e, 0x31, 0x32, 0x00,
+		0x02, 0x53, 0x4d, 0x42, 0x20, 0x32, 0x2e, 0x30, 0x30, 0x32, 0x00,
+		0x02, 0x53, 0x4d, 0x42, 0x20, 0x32, 0x2e, 0x3f, 0x3f, 0x3f, 0x00,
+	}
+
+	_, err := conn.Write(smb1_packet)
+	if err != nil {
+		return "WriteError", nil
+	}
+
+	buffer := make([]byte, 1024)
+	bytesRead, err := conn.Read(buffer)
+	if err != nil {
+		return "ReadError", nil
+	}
+
+	if bytesRead >= 8 && string(buffer[4:8]) == "\xffSMB" {
+		return "SMB1", buffer[:bytesRead]
+	}
+
+	return "NotSMB", nil
+}
